@@ -1,28 +1,20 @@
-# baseline_ollama.py
 import time
-from openai import OpenAI # ใช้ library ของ OpenAI เพื่อคุยกับ Ollama
+from openai import OpenAI
 
-# ตั้งค่าให้ชี้ไปที่ Ollama ที่รันบนเครื่อง
 try:
     client = OpenAI(
         base_url='http://localhost:11434/v1',
-        api_key='ollama', # ใส่ 'ollama'
+        api_key='ollama',
     )
     client.models.list()
-    print("✅ Baseline (Ollama) พร้อมใช้งาน")
+    print("Baseline (Phi3) ready")
 except Exception as e:
-    print(f"❌ ไม่สามารถเชื่อมต่อ Ollama (http://localhost:11434)")
-    print("👉 ตรวจสอบว่าคุณรัน 'ollama serve' หรือเปิดโปรแกรม Ollama แล้ว")
+    print(f"Cannot connect to Ollama: {e}")
     client = None
 
-# โมเดลที่เราจะใช้ (ต้อง 'ollama pull codellama:7b-instruct' ก่อน)
-# หรือ 'ollama pull llama3:8b'
-MODEL_NAME = "codellama:7b-instruct"
+MODEL_NAME = "phi3:3.8b"
 
-def generate_code_ollama(problem_prompt: str) -> dict:
-    """
-    สร้างโค้ดโดยใช้ Ollama (CodeLlama) แบบ One-shot
-    """
+def generate_code_phi3(problem_prompt: str) -> dict:
     if not client:
         return {
             "code": "ERROR: Ollama client not initialized",
@@ -48,14 +40,13 @@ def generate_code_ollama(problem_prompt: str) -> dict:
         tokens_used = response.usage.total_tokens
         
     except Exception as e:
-        print(f"!! Error (Ollama): {e}")
+        print(f"Error (Phi3): {e}")
         generated_code = f"ERROR: {e}"
         tokens_used = 0
         
     end_time = time.time()
     latency_sec = end_time - start_time
     
-    # แกะโค้ด
     if "```python" in generated_code:
         generated_code = generated_code.split("```python")[1].split("```")[0]
     elif "```" in generated_code:
@@ -68,11 +59,10 @@ def generate_code_ollama(problem_prompt: str) -> dict:
     }
 
 if __name__ == "__main__":
-    # ตัวอย่างการทดสอบ
     test_problem = "def add(a, b):\n    \"\"\"Return the sum of two numbers.\"\"\""
-    result = generate_code_ollama(test_problem)
-    print("--- Baseline (Ollama) Test ---")
-    print(f"Time taken: {result['latency_sec']:.2f}s")
-    print(f"Tokens used: {result['tokens_used']}")
-    print("--- Code ---")
+    result = generate_code_phi3(test_problem)
+    print("Baseline (Phi3) Test")
+    print(f"Time: {result['latency_sec']:.2f}s")
+    print(f"Tokens: {result['tokens_used']}")
+    print("Code:")
     print(result['code'])

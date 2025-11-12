@@ -7,14 +7,14 @@ try:
         api_key='ollama',
     )
     client.models.list()
-    print("Baseline (Llama3) ready")
+    print("Baseline (Llama3.1) ready")
 except Exception as e:
     print(f"Cannot connect to Ollama: {e}")
     client = None
 
-MODEL_NAME = "llama3:8b"
+MODEL_NAME = "llama3.1:8b"
 
-def generate_code_llama3(problem_prompt: str) -> dict:
+def generate_code_llama31(problem_prompt: str) -> dict:
     if not client:
         return {
             "code": "ERROR: Ollama client not initialized",
@@ -40,7 +40,7 @@ def generate_code_llama3(problem_prompt: str) -> dict:
         tokens_used = response.usage.total_tokens
         
     except Exception as e:
-        print(f"Error (Llama3): {e}")
+        print(f"Error (Llama3.1): {e}")
         generated_code = f"ERROR: {e}"
         tokens_used = 0
         
@@ -60,8 +60,8 @@ def generate_code_llama3(problem_prompt: str) -> dict:
 
 if __name__ == "__main__":
     test_problem = "def add(a, b):\n    \"\"\"Return the sum of two numbers.\"\"\""
-    result = generate_code_llama3(test_problem)
-    print("Baseline (Llama3) Test")
+    result = generate_code_llama31(test_problem)
+    print("Baseline (Llama3.1) Test")
     print(f"Time: {result['latency_sec']:.2f}s")
     print(f"Tokens: {result['tokens_used']}")
     print("Code:")

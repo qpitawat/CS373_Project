@@ -9,9 +9,12 @@ import timeit
 import ast
 
 from baseline_deepseek import generate_code_deepseek
-from baseline_ollama import generate_code_ollama
-from baseline_llama3 import generate_code_llama3
-from agentic_ai import run_agentic_team
+from baseline_llama31 import generate_code_llama31
+from baseline_phi3 import generate_code_phi3
+from baseline_qwen import generate_code_qwen
+from baseline_gemma import generate_code_gemma
+from baseline_mistral import generate_code_mistral
+# from agentic_ai import run_agentic_ai  # Commented out for baseline testing
 
 def load_human_eval(limit: int = None):
     print("Loading HumanEval...")
@@ -110,28 +113,83 @@ def get_code_length(code_str: str) -> int:
     loc = len([line for line in lines if line and not line.startswith('#')])
     return loc
 
-def get_exec_time(code_str: str, entry_point: str, benchmark_type: str) -> float:
+def get_exec_time(code_str: str, entry_point: str, benchmark_type: str, problem: dict) -> float:
+    """Measure average execution time of generated code"""
     if "ERROR" in code_str or not code_str.strip():
         return float('inf')
-        
+    
+    # Don't measure execution time if code doesn't pass tests
+    # This is more reliable than trying to guess parameters
     try:
+        # Add all common imports
+        setup_code = """
+from typing import List, Tuple, Optional, Dict, Any, Set
+import re
+import math
+import statistics
+import heapq
+import collections
+from collections import Counter, defaultdict
+from itertools import chain
+"""
+        setup_code += "\n" + code_str + "\n"
+        
+        # Try to extract a simple test case from the problem
         if benchmark_type == "HumanEval":
-            setup_code = code_str
-            test_code = f"{entry_point}()"
-            if "add" in entry_point:
-                test_code = f"{entry_point}(1, 2)"
-            elif "check_if_even" in entry_point:
-                test_code = f"{entry_point}(4)"
+            prompt = problem.get('prompt', '')
+            test = problem.get('test', '')
             
-            try:
-                t = timeit.timeit(stmt=test_code, setup=setup_code, number=100)
-                return t / 100.0
-            except Exception:
-                return float('inf')
-    except Exception:
+            # Try to find example call in docstring
+            test_code = None
+            if '>>>' in prompt:
+                # Extract example from docstring
+                for line in prompt.split('\n'):
+                    if '>>>' in line and entry_point in line:
+                        test_code = line.split('>>>')[1].strip()
+                        break
+            
+            # Fallback: try simple parameters based on signature
+            if not test_code:
+                if 'List[' in prompt:
+                    test_code = f"{entry_point}([1, 2, 3])"
+                elif 'str' in prompt and ',' in prompt:
+                    test_code = f"{entry_point}('test', 'es')"
+                elif 'str' in prompt:
+                    test_code = f"{entry_point}('test')"
+                elif 'int' in prompt and ',' in prompt:
+                    test_code = f"{entry_point}(5, 3)"
+                elif 'int' in prompt:
+                    test_code = f"{entry_point}(5)"
+                else:
+                    return float('inf')
+            
+            if test_code:
+                try:
+                    # Run with timeout
+                    t = timeit.timeit(stmt=test_code, setup=setup_code, number=100, globals={})
+                    return t / 100.0
+                except:
+                    return float('inf')
+        
+        elif benchmark_type == "MBPP":
+            # For MBPP, extract function name and use first test case
+            test_list = problem.get('test_list', [])
+            if test_list:
+                # Extract function call from first test
+                first_test = test_list[0]
+                # Parse: assert func(...) == result
+                if 'assert ' in first_test and '==' in first_test:
+                    func_call = first_test.split('assert ')[1].split('==')[0].strip()
+                    try:
+                        t = timeit.timeit(stmt=func_call, setup=setup_code, number=100, globals={})
+                        return t / 100.0
+                    except:
+                        return float('inf')
+        
         return float('inf')
         
-    return float('inf')
+    except Exception:
+        return float('inf')
 
 def main():
     problems = load_human_eval()
@@ -143,9 +201,12 @@ def main():
 
     systems_to_test = {
         "Baseline_DeepSeek": generate_code_deepseek,
-        "Baseline_CodeLlama7B": generate_code_ollama,
-        "Baseline_Llama3_8B": generate_code_llama3,
-        "Agentic_Team": run_agentic_team,
+        "Baseline_Llama31_8B": generate_code_llama31,
+        "Baseline_Phi3_3.8B": generate_code_phi3,
+        "Baseline_Qwen3_8B": generate_code_qwen,
+        "Baseline_Gemma_7B": generate_code_gemma,
+        "Baseline_Mistral_7B": generate_code_mistral,
+        # "Agentic_Ai": run_agentic_ai,  # Commented out for baseline testing
     }
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -180,7 +241,7 @@ def main():
                 passed_test = check_correctness(problem, generated_code, BENCHMARK_TYPE)
                 complexity = get_cyclomatic_complexity(generated_code)
                 code_length = get_code_length(generated_code)
-                avg_exec_time = get_exec_time(generated_code, entry_point, BENCHMARK_TYPE)
+                avg_exec_time = get_exec_time(generated_code, entry_point, BENCHMARK_TYPE, problem)
                 
                 print(f"    Passed: {passed_test} | Complexity: {complexity} | LOC: {code_length} | Latency: {stats['latency_sec']:.2f}s")
 

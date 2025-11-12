@@ -12,9 +12,9 @@ except Exception as e:
     print(f"Cannot connect to Ollama: {e}")
     ollama_client = None
 
-MODEL_GENERATOR = "deepseek-coder:6.7b-instruct"
-MODEL_REFINER = "codellama:7b-instruct"
-MODEL_MANAGER = "llama3:8b"
+MODEL_GENERATOR = "codellama:7b-instruct"
+MODEL_REFINER = "llama3:8b"
+MODEL_MANAGER = "deepseek-coder:6.7b-instruct"
 
 def call_ollama_worker(system_prompt: str, user_prompt: str, model_name: str) -> dict:
     if not ollama_client:
@@ -34,10 +34,22 @@ def call_ollama_worker(system_prompt: str, user_prompt: str, model_name: str) ->
         generated_code = response.choices[0].message.content
         tokens_used = response.usage.total_tokens
         
+        # Extract code from markdown blocks
         if "```python" in generated_code:
             generated_code = generated_code.split("```python")[1].split("```")[0]
         elif "```" in generated_code:
             generated_code = generated_code.split("```")[1].split("```")[0]
+        
+        # Remove any test/print statements at the end
+        lines = generated_code.strip().split('\n')
+        clean_lines = []
+        for line in lines:
+            stripped = line.strip()
+            # Skip print, assert, and test-related lines
+            if stripped.startswith('print(') or stripped.startswith('assert ') or stripped.startswith('# Test'):
+                continue
+            clean_lines.append(line)
+        generated_code = '\n'.join(clean_lines)
             
         return {
             "code": generated_code.strip(), 
@@ -50,22 +62,40 @@ def call_ollama_worker(system_prompt: str, user_prompt: str, model_name: str) ->
 
 def code_generator_agent(problem: str) -> dict:
     print("   [Generator working...]")
-    system_prompt = "You are an expert Python programmer. Write a complete function to solve the problem. Respond ONLY with the raw Python code."
-    user_prompt = f"Problem:\n{problem}"
+    system_prompt = """You are an expert Python programmer. Generate ONLY the function code to solve the problem.
+
+CRITICAL RULES:
+1. Include ALL necessary imports at the top (typing, re, math, heapq, collections, etc.)
+2. Follow the EXACT function signature if provided in the problem
+3. Write minimal, efficient code - avoid unnecessary complexity
+4. Handle edge cases (empty inputs, None, single elements)
+5. NO explanations, NO test code, NO print statements
+6. Return ONLY the raw Python function code"""
+    
+    user_prompt = f"Write the function for this problem:\n\n{problem}"
     return call_ollama_worker(system_prompt, user_prompt, MODEL_GENERATOR)
 
 def code_refiner_agent(code_draft: str, feedback: str) -> dict:
     print("   [Refiner working...]")
-    system_prompt = "You are a programmer. Your task is to rewrite the 'Old Code' based on the 'Review Feedback'. Respond ONLY with the new, complete, fixed Python code."
+    system_prompt = """You are an expert Python programmer. Fix the code based on feedback.
+
+RULES:
+1. Keep ALL imports from the original code
+2. Fix ONLY what the feedback mentions
+3. Keep the function signature unchanged
+4. Make minimal changes - don't rewrite working code
+5. Return ONLY the complete fixed Python code, no explanations"""
     
-    user_prompt = f"""
-Old Code:
+    user_prompt = f"""Fix this code based on the feedback.
+
+Current Code:
 ```python
 {code_draft}
 ```
-Review Feedback: {feedback}
 
-New Fixed Code: """
+Feedback: {feedback}
+
+Fixed Code:"""
     return call_ollama_worker(system_prompt, user_prompt, MODEL_REFINER)
 
 def manager_reviewer_agent(problem: str, code_draft: str) -> dict:
@@ -73,13 +103,19 @@ def manager_reviewer_agent(problem: str, code_draft: str) -> dict:
     if not ollama_client:
         return {"feedback": "ERROR: Ollama client not initialized", "tokens_used": 0, "latency_sec": 0}
 
-    system_prompt = """You are a Senior Software Architect and a strict code reviewer. Your task is to review the code against the problem statement. Look for:
+    system_prompt = """You are a code reviewer. Check if the code solves the problem correctly.
 
-- Logic errors or bugs.
-- Missing edge cases (e.g., empty lists, null inputs).
-- Bad readability (PEP 8) or inefficient code.
+REVIEW CHECKLIST:
+1. Does it have all required imports?
+2. Does the function signature match the problem?
+3. Will it handle edge cases (empty lists, None, single elements)?
+4. Is the logic correct for the problem description?
+5. Is it simple and efficient?
 
-Provide concise, actionable feedback. If the code is PERFECT and needs no changes, respond ONLY with the word 'PERFECT'."""
+RESPONSE RULES:
+- If code is correct and complete: respond ONLY "PERFECT"
+- If there are issues: state ONE specific fix in 10 words or less
+- Be strict but concise"""
     
     user_prompt = f"""
 Problem Statement:
@@ -115,7 +151,7 @@ Your Feedback: """
         "latency_sec": latency_sec,
         "tokens_used": tokens_used
     }
-def run_agentic_team(problem_prompt: str, max_iterations: int = 3) -> dict:
+def run_agentic_team(problem_prompt: str, max_iterations: int = 1) -> dict:
     print(f"\nAGENTIC TEAM: Starting")
 
     total_latency_sec = 0
