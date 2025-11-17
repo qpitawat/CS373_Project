@@ -12,8 +12,8 @@ except Exception as e:
     print(f"Cannot connect to Ollama: {e}")
     ollama_client = None
 
-MODEL_GENERATOR = "codellama:7b-instruct"
-MODEL_REFINER = "llama3:8b"
+MODEL_GENERATOR = "qwen3:8b"
+MODEL_REFINER = "llama3.1:8b"
 MODEL_MANAGER = "deepseek-coder:6.7b-instruct"
 
 def call_ollama_worker(system_prompt: str, user_prompt: str, model_name: str) -> dict:
@@ -62,31 +62,47 @@ def call_ollama_worker(system_prompt: str, user_prompt: str, model_name: str) ->
 
 def code_generator_agent(problem: str) -> dict:
     print("   [Generator working...]")
-    system_prompt = """You are an expert Python programmer. Generate ONLY the function code to solve the problem.
+    system_prompt = """You are a world-class Python programmer competing in a coding challenge.
 
-CRITICAL RULES:
-1. Include ALL necessary imports at the top (typing, re, math, heapq, collections, etc.)
-2. Follow the EXACT function signature if provided in the problem
-3. Write minimal, efficient code - avoid unnecessary complexity
-4. Handle edge cases (empty inputs, None, single elements)
-5. NO explanations, NO test code, NO print statements
-6. Return ONLY the raw Python function code"""
+YOUR MISSION: Write PERFECT, PRODUCTION-READY code that passes ALL test cases.
+
+MANDATORY REQUIREMENTS:
+1. Include ALL necessary imports (typing, re, math, heapq, collections, itertools, etc.)
+2. Follow the EXACT function signature from the problem
+3. Handle ALL edge cases:
+    - Empty inputs ([], "", None)
+    - Single element inputs
+    - Negative numbers
+    - Zero values
+    - Large inputs
+4. Write efficient O(n) or O(n log n) solutions when possible
+5. Use appropriate data structures (dict, set, deque, heap)
+6. NO explanations, NO test code, NO print/input statements
+
+OUTPUT: Raw Python code ONLY. No markdown, no comments except docstring."""
     
-    user_prompt = f"Write the function for this problem:\n\n{problem}"
+    user_prompt = f"Solve this problem with PERFECT code:\n\n{problem}"
     return call_ollama_worker(system_prompt, user_prompt, MODEL_GENERATOR)
 
-def code_refiner_agent(code_draft: str, feedback: str) -> dict:
+def code_refiner_agent(code_draft: str, feedback: str, problem: str) -> dict:
     print("   [Refiner working...]")
-    system_prompt = """You are an expert Python programmer. Fix the code based on feedback.
+    system_prompt = """You are an expert Python debugger and optimizer.
+
+YOUR TASK: Fix the code to be PERFECT based on the feedback.
 
 RULES:
-1. Keep ALL imports from the original code
-2. Fix ONLY what the feedback mentions
-3. Keep the function signature unchanged
-4. Make minimal changes - don't rewrite working code
-5. Return ONLY the complete fixed Python code, no explanations"""
+1. Keep ALL imports (add more if needed)
+2. Fix the EXACT issue mentioned in feedback
+3. Maintain function signature
+4. Add edge case handling if missing
+5. Ensure no syntax errors
+6. Remove any print() or input() calls
+7. Return COMPLETE working code
+
+OUTPUT: Raw Python code ONLY."""
     
-    user_prompt = f"""Fix this code based on the feedback.
+    user_prompt = f"""Problem:
+{problem}
 
 Current Code:
 ```python
@@ -95,7 +111,7 @@ Current Code:
 
 Feedback: {feedback}
 
-Fixed Code:"""
+Provide the COMPLETE fixed code:"""
     return call_ollama_worker(system_prompt, user_prompt, MODEL_REFINER)
 
 def manager_reviewer_agent(problem: str, code_draft: str) -> dict:
@@ -103,19 +119,15 @@ def manager_reviewer_agent(problem: str, code_draft: str) -> dict:
     if not ollama_client:
         return {"feedback": "ERROR: Ollama client not initialized", "tokens_used": 0, "latency_sec": 0}
 
-    system_prompt = """You are a code reviewer. Check if the code solves the problem correctly.
+    system_prompt = """You are a Senior Code Reviewer.
+Your goal is to find LOGIC ERRORS that would cause the code to fail tests.
 
-REVIEW CHECKLIST:
-1. Does it have all required imports?
-2. Does the function signature match the problem?
-3. Will it handle edge cases (empty lists, None, single elements)?
-4. Is the logic correct for the problem description?
-5. Is it simple and efficient?
-
-RESPONSE RULES:
-- If code is correct and complete: respond ONLY "PERFECT"
-- If there are issues: state ONE specific fix in 10 words or less
-- Be strict but concise"""
+INSTRUCTIONS:
+- Look for: Off-by-one errors, missing edge cases (empty input, negative numbers), or wrong algorithms.
+- IGNORE: Variable names, comments, or style issues.
+- If the logic is correct, output ONLY: "PERFECT"
+- If there is a bug, output: "Fix: [explain the logic error briefly]"
+"""
     
     user_prompt = f"""
 Problem Statement:
@@ -151,45 +163,47 @@ Your Feedback: """
         "latency_sec": latency_sec,
         "tokens_used": tokens_used
     }
-def run_agentic_team(problem_prompt: str, max_iterations: int = 1) -> dict:
-    print(f"\nAGENTIC TEAM: Starting")
+def run_agentic_team(problem_prompt: str, max_iterations: int = 3) -> dict:
+    print(f"\nAGENTIC TEAM: Starting (Max {max_iterations} iterations)")
 
     total_latency_sec = 0
     total_tokens_used = 0
-    current_code_draft = ""
-
+    
+    # Phase 1: Generate initial solution
     gen_result = code_generator_agent(problem_prompt)
     current_code_draft = gen_result["code"]
     total_latency_sec += gen_result["latency_sec"]
     total_tokens_used += gen_result["tokens_used"]
 
-    print(f"   [Iteration 0] Draft complete (Time: {gen_result['latency_sec']:.2f}s)")
-    print("```python\n" + current_code_draft + "\n```")
-
+    print(f"   [Iteration 0] Draft complete (Time: {gen_result['latency_sec']:.2f}s, Tokens: {gen_result['tokens_used']})")
+    
+    # Phase 2: Iterative refinement
     for i in range(max_iterations):
-        print(f"[Iteration {i+1}]")
+        print(f"\n[Iteration {i+1}]")
         
+        # Manager reviews
         review_result = manager_reviewer_agent(problem_prompt, current_code_draft)
         total_latency_sec += review_result["latency_sec"]
         total_tokens_used += review_result["tokens_used"]
         feedback = review_result["feedback"]
         
-        feedback_first_line = feedback.splitlines()[0] if '\n' in feedback else feedback
-        print(f"   [Manager Feedback] (Time: {review_result['latency_sec']:.2f}s): {feedback_first_line}...")
+        feedback_preview = feedback[:80] + "..." if len(feedback) > 80 else feedback
+        print(f"   [Manager] {feedback_preview}")
         
+        # Check if perfect
         if "PERFECT" in feedback.upper():
-            print("   [Manager] Approved")
+            print(f"   [Manager] APPROVED")
             break
-            
-        refine_result = code_refiner_agent(current_code_draft, feedback)
+        
+        # Refiner fixes issues
+        refine_result = code_refiner_agent(current_code_draft, feedback, problem_prompt)
         current_code_draft = refine_result["code"]
         total_latency_sec += refine_result["latency_sec"]
         total_tokens_used += refine_result["tokens_used"]
         
-        print(f"   [Refiner] Code updated (Time: {refine_result['latency_sec']:.2f}s)")
-        print("```python\n" + current_code_draft + "\n```")
-
-    print(f"AGENTIC TEAM: Complete")
+        print(f"   [Refiner] Code updated (Time: {refine_result['latency_sec']:.2f}s, Tokens: {refine_result['tokens_used']})")
+    
+    print(f"\nAGENTIC TEAM: Complete (Total: {total_latency_sec:.2f}s, {total_tokens_used} tokens)")
 
     return {
         "code": current_code_draft,

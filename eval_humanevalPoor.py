@@ -1,5 +1,5 @@
+"""Evaluation script for HumanEval benchmark"""
 import json
-import gzip
 import os
 import csv
 import subprocess
@@ -8,13 +8,13 @@ from datetime import datetime
 import timeit
 import ast
 
-from baseline_deepseek import generate_code_deepseek
-from baseline_llama31 import generate_code_llama31
-from baseline_phi3 import generate_code_phi3
-from baseline_qwen import generate_code_qwen
-from baseline_gemma import generate_code_gemma
-from baseline_mistral import generate_code_mistral
-# from agentic_ai import run_agentic_ai  # Commented out for baseline testing
+from poorPrompt.baseline_deepseek import generate_code_deepseek
+from poorPrompt.baseline_llama31 import generate_code_llama31
+from poorPrompt.baseline_phi3 import generate_code_phi3
+from poorPrompt.baseline_qwen import generate_code_qwen
+from poorPrompt.baseline_gemma import generate_code_gemma
+from poorPrompt.baseline_mistral import generate_code_mistral
+# from agentic_ai import run_agentic_team  # Uncomment to test agentic AI
 
 def load_human_eval(limit: int = None):
     print("Loading HumanEval...")
@@ -32,43 +32,15 @@ def load_human_eval(limit: int = None):
         return problems[:limit]
     return problems
 
-def load_mbpp(limit: int = None):
-    print("Loading MBPP...")
-    problems = []
-    filepath = "data/mbpp.jsonl"
-    if not os.path.exists(filepath):
-        print(f"File '{filepath}' not found")
-        return []
-
-    with open(filepath, "r", encoding="utf-8") as f:
-        for line in f:
-            problems.append(json.loads(line))
-            
-    if limit:
-        return problems[:limit]
-    return problems
-
-def check_correctness(problem: dict, generated_code: str, benchmark_type: str) -> bool:
+def check_correctness(problem: dict, generated_code: str) -> bool:
     if "ERROR" in generated_code:
-        return False
-    
-    # Check for input() calls that would cause hanging
-    if "input(" in generated_code:
         return False
         
     with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False, encoding='utf-8') as f:
         f.write(generated_code)
         f.write("\n\n")
-        
-        if benchmark_type == "HumanEval":
-            f.write(problem['test'])
-            f.write(f"\ncheck({problem['entry_point']})")
-        elif benchmark_type == "MBPP":
-            f.write("import sys\n")
-            for test_case in problem['test_list']:
-                f.write(f"try:\n    {test_case}\nexcept AssertionError:\n    print('Test Failed')\n    sys.exit(1)\n")
-            f.write("print('All Tests Passed')\n")
-            
+        f.write(problem['test'])
+        f.write(f"\ncheck({problem['entry_point']})")
         temp_file_name = f.name
         
     try:
@@ -76,24 +48,15 @@ def check_correctness(problem: dict, generated_code: str, benchmark_type: str) -
             ['python', temp_file_name],
             capture_output=True,
             text=True,
-            timeout=5.0,
-            stdin=subprocess.DEVNULL  # Prevent hanging on input()
+            timeout=5.0
         )
-        
-        if result.returncode == 0:
-            return True
-        else:
-            return False
-            
+        return result.returncode == 0
     except subprocess.TimeoutExpired:
         return False
-    except Exception as e:
+    except Exception:
         return False
     finally:
-        try:
-            os.remove(temp_file_name)
-        except:
-            pass
+        os.remove(temp_file_name)
 
 def get_code_quality_metrics(code_str: str) -> dict:
     """Get comprehensive code quality metrics"""
@@ -110,7 +73,7 @@ def get_code_quality_metrics(code_str: str) -> dict:
     try:
         tree = ast.parse(code_str)
         
-        # Count lines of code (non-empty, non-comment)
+        # Count lines of code
         lines = [line.strip() for line in code_str.split('\n')]
         loc = len([line for line in lines if line and not line.startswith('#')])
         
@@ -143,7 +106,6 @@ def get_code_quality_metrics(code_str: str) -> dict:
             "cyclomatic_complexity": complexity
         }
     except Exception:
-        # If parsing fails, still count LOC
         lines = [line.strip() for line in code_str.split('\n')]
         loc = len([line for line in lines if line and not line.startswith('#')])
         return {
@@ -155,13 +117,12 @@ def get_code_quality_metrics(code_str: str) -> dict:
             "cyclomatic_complexity": 0
         }
 
-def get_exec_time(code_str: str, entry_point: str, benchmark_type: str, problem: dict) -> float:
-    """Measure average execution time of generated code"""
+def get_exec_time(code_str: str, entry_point: str, problem: dict) -> float:
+    """Measure average execution time"""
     if "ERROR" in code_str or not code_str.strip():
         return float('inf')
     
     try:
-        # Add all common imports
         setup_code = """
 from typing import List, Tuple, Optional, Dict, Any, Set
 import re
@@ -175,92 +136,51 @@ from itertools import chain
         setup_code += "\n" + code_str + "\n"
         
         test_code = None
+        prompt = problem.get('prompt', '')
         
-        if benchmark_type == "HumanEval":
-            prompt = problem.get('prompt', '')
-            
-            # Strategy 1: Extract from docstring examples (>>> lines)
-            if '>>>' in prompt:
-                for line in prompt.split('\n'):
-                    if '>>>' in line and entry_point in line:
-                        # Extract the function call
-                        test_code = line.split('>>>')[1].strip()
-                        # Remove any expected output on the same line
-                        if '\n' in test_code:
-                            test_code = test_code.split('\n')[0].strip()
+        # Strategy 1: Extract from docstring
+        if '>>>' in prompt:
+            for line in prompt.split('\n'):
+                if '>>>' in line and entry_point in line:
+                    test_code = line.split('>>>')[1].strip()
+                    if '\n' in test_code:
+                        test_code = test_code.split('\n')[0].strip()
+                    break
+        
+        # Strategy 2: Parse function signature
+        if not test_code:
+            try:
+                tree = ast.parse(code_str)
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.FunctionDef) and node.name == entry_point:
+                        test_params = []
+                        for arg in node.args.args:
+                            arg_name = arg.arg
+                            if 'list' in arg_name.lower() or 'arr' in arg_name.lower():
+                                test_params.append('[1, 2, 3]')
+                            elif 'str' in arg_name.lower() or 'text' in arg_name.lower():
+                                test_params.append("'test'")
+                            elif 'dict' in arg_name.lower():
+                                test_params.append('{}')
+                            else:
+                                test_params.append('1')
+                        test_code = f"{entry_point}({', '.join(test_params)})"
                         break
-            
-            # Strategy 2: Parse function signature from the code itself
-            if not test_code:
-                try:
-                    # Try to parse the function signature
-                    tree = ast.parse(code_str)
-                    for node in ast.walk(tree):
-                        if isinstance(node, ast.FunctionDef) and node.name == entry_point:
-                            args = node.args.args
-                            num_args = len(args)
-                            
-                            # Generate test parameters based on argument names and types
-                            test_params = []
-                            for arg in args:
-                                arg_name = arg.arg
-                                # Try to infer type from name
-                                if 'list' in arg_name.lower() or 'arr' in arg_name.lower() or 'nums' in arg_name.lower():
-                                    test_params.append('[1, 2, 3]')
-                                elif 'str' in arg_name.lower() or 'text' in arg_name.lower() or 'word' in arg_name.lower():
-                                    test_params.append("'test'")
-                                elif 'dict' in arg_name.lower():
-                                    test_params.append('{}')
-                                elif 'bool' in arg_name.lower():
-                                    test_params.append('True')
-                                else:
-                                    # Default to integer
-                                    test_params.append('1')
-                            
-                            test_code = f"{entry_point}({', '.join(test_params)})"
-                            break
-                except:
-                    pass
-            
-            # Strategy 3: Fallback based on prompt keywords
-            if not test_code:
-                prompt_lower = prompt.lower()
-                if 'list' in prompt_lower or 'array' in prompt_lower:
-                    if ',' in prompt and 'two' in prompt_lower:
-                        test_code = f"{entry_point}([1, 2, 3], [4, 5])"
-                    else:
-                        test_code = f"{entry_point}([1, 2, 3])"
-                elif 'string' in prompt_lower or 'str' in prompt_lower:
-                    if 'two' in prompt_lower or 'substring' in prompt_lower:
-                        test_code = f"{entry_point}('hello', 'world')"
-                    else:
-                        test_code = f"{entry_point}('test')"
-                elif 'int' in prompt_lower or 'number' in prompt_lower:
-                    if 'two' in prompt_lower:
-                        test_code = f"{entry_point}(5, 3)"
-                    else:
-                        test_code = f"{entry_point}(5)"
-                else:
-                    # Last resort: try with no arguments
-                    test_code = f"{entry_point}()"
+            except:
+                pass
         
-        elif benchmark_type == "MBPP":
-            # For MBPP, extract function call from first test case
-            test_list = problem.get('test_list', [])
-            if test_list:
-                first_test = test_list[0]
-                # Parse: assert func(...) == result
-                if 'assert ' in first_test:
-                    # Extract everything between 'assert' and '=='
-                    if '==' in first_test:
-                        test_code = first_test.split('assert ')[1].split('==')[0].strip()
-                    elif '!=' in first_test:
-                        test_code = first_test.split('assert ')[1].split('!=')[0].strip()
-                    else:
-                        # Just assert func(...) without comparison
-                        test_code = first_test.split('assert ')[1].strip()
+        # Strategy 3: Keyword-based fallback
+        if not test_code:
+            prompt_lower = prompt.lower()
+            if 'list' in prompt_lower:
+                test_code = f"{entry_point}([1, 2, 3])"
+            elif 'string' in prompt_lower:
+                test_code = f"{entry_point}('test')"
+            elif 'int' in prompt_lower:
+                test_code = f"{entry_point}(5)"
+            else:
+                test_code = f"{entry_point}()"
         
-        # Try to execute the test code
         if test_code:
             try:
                 # First verify it can run at least once with subprocess (has timeout)
@@ -273,7 +193,7 @@ from itertools import chain
                 result = subprocess.run(
                     ['python', test_file.name],
                     capture_output=True,
-                    timeout=2.0,
+                    timeout=20.0,
                     stdin=subprocess.DEVNULL
                 )
                 os.remove(test_file.name)
@@ -281,8 +201,7 @@ from itertools import chain
                 if result.returncode != 0:
                     return float('inf')
                 
-                # Now time it with reduced iterations for slow code
-                # Try 100 iterations first, if too slow, reduce to 10
+                # Now time it - use adaptive iterations for best precision
                 try:
                     # Start with 100 iterations
                     t = timeit.timeit(stmt=test_code, setup=setup_code, number=100, globals={})
@@ -303,24 +222,19 @@ from itertools import chain
                         t = timeit.timeit(stmt=test_code, setup=setup_code, number=10, globals={})
                         return t / 10.0
                 except Exception:
-                    # If timing fails, return inf
                     return float('inf')
-                    
-            except Exception as e:
-                # If timing fails, return -1 to distinguish from timeout
-                return -1.0
+            except Exception:
+                return float('inf')
         
         return float('inf')
-        
-    except Exception as e:
+    except Exception:
         return float('inf')
 
 def main():
     problems = load_human_eval()
-    BENCHMARK_TYPE = "HumanEval"
     
     if not problems:
-        print("Benchmark not found")
+        print("HumanEval dataset not found")
         return
 
     systems_to_test = {
@@ -330,11 +244,11 @@ def main():
         "Baseline_Qwen3_8B": generate_code_qwen,
         "Baseline_Gemma_7B": generate_code_gemma,
         "Baseline_Mistral_7B": generate_code_mistral,
-        # "Agentic_Ai": run_agentic_ai,  # Commented out for baseline testing
+        # "Agentic_Team": run_agentic_team,
     }
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    results_filename = f"results/results_{BENCHMARK_TYPE}_{timestamp}.csv"
+    results_filename = f"results/humaneval_{timestamp}.csv"
     
     csv_headers = [
         "problem_id", "system_name", "generated_code",
@@ -343,32 +257,31 @@ def main():
         "syntax_valid", "num_functions", "avg_exec_time_sec"
     ]
 
-    print(f"Starting experiment: {len(problems)} problems | {len(systems_to_test)} systems")
-    print(f"Results will be saved to: {results_filename}")
+    print(f"HumanEval Evaluation")
+    print(f"Problems: {len(problems)} | Systems: {len(systems_to_test)}")
+    print(f"Results: {results_filename}\n")
 
     with open(results_filename, 'w', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=csv_headers)
         writer.writeheader()
 
         for i, problem in enumerate(problems):
-            problem_id = problem.get('task_id', problem.get('id', i))
-            problem_prompt = problem.get('prompt', problem.get('text', ''))
-            entry_point = problem.get('entry_point', '')
+            problem_id = problem['task_id']
+            problem_prompt = problem['prompt']
+            entry_point = problem['entry_point']
 
-            print(f"\n[Problem {i+1}/{len(problems)}] ID: {problem_id}")
+            print(f"[{i+1}/{len(problems)}] {problem_id}")
 
             for system_name, system_func in systems_to_test.items():
-                print(f"  [Testing: {system_name}]")
+                print(f"  {system_name}...", end=" ")
                 
                 stats = system_func(problem_prompt)
                 generated_code = stats["code"]
 
-                # Measure all metrics
-                passed_test = check_correctness(problem, generated_code, BENCHMARK_TYPE)
+                passed_test = check_correctness(problem, generated_code)
                 quality_metrics = get_code_quality_metrics(generated_code)
-                avg_exec_time = get_exec_time(generated_code, entry_point, BENCHMARK_TYPE, problem)
+                avg_exec_time = get_exec_time(generated_code, entry_point, problem)
                 
-                # Display summary
                 # Format execution time with appropriate unit
                 if avg_exec_time >= 0 and avg_exec_time != float('inf'):
                     if avg_exec_time < 0.000001:  # < 1 microsecond
@@ -381,7 +294,7 @@ def main():
                         exec_time_str = f"{avg_exec_time:.3f}s"
                 else:
                     exec_time_str = "N/A"
-                print(f"    Passed: {passed_test} | Latency: {stats['latency_sec']:.2f}s | Tokens: {stats['tokens_used']} | LOC: {quality_metrics['loc']} | Complexity: {quality_metrics['cyclomatic_complexity']} | Exec: {exec_time_str}")
+                print(f"Passed: {passed_test} | Latency: {stats['latency_sec']:.2f}s | Tokens: {stats['tokens_used']} | LOC: {quality_metrics['loc']} | Complexity: {quality_metrics['cyclomatic_complexity']} | Exec: {exec_time_str}")
 
                 writer.writerow({
                     "problem_id": problem_id,
@@ -399,7 +312,7 @@ def main():
                     "avg_exec_time_sec": avg_exec_time if avg_exec_time != float('inf') else -1
                 })
 
-    print(f"\nExperiment complete! Results saved to {results_filename}")
+    print(f"\nComplete! Results: {results_filename}")
 
 if __name__ == "__main__":
     main()
